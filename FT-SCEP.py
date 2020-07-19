@@ -6,10 +6,11 @@ from os import stat, remove
 from os.path import exists
 from hashlib import md5
 from io import BytesIO
-from time import time
+import time
 import requests
 import json
 from helpers import *
+from tqdm import tqdm
 
 parse = ArgumentParser(
     description="Generates a shop compatible with Tinfoil using a configuration file."
@@ -40,7 +41,7 @@ args = parse.parse_args()
 config = json.load(open(args.config, "r"))
 
 if exists(args.cache_path):
-    diff = time() - stat(args.cache_path).st_ctime
+    diff = time.time() - stat(args.cache_path).st_ctime
     if diff > args.cache_ttl:
         remove(args.cache_path)
     else:
@@ -61,26 +62,77 @@ drive = build(
     "drive", "v3", credentials=get_creds(config["credentials"], config["token"])
 )
 
-print("Getting all files. (This may take a while.)")
-all_files = []
-for i in config["mirrors"]:
-    all_files += lsf(drive, i)
+print("Getting all files and sharing new ones. (This may take a while.)")
+
+def lookforfiles():
+    all_files = []
+    for folder_id in config["mirrors"]:
+        get_all_files_in_folder(drive, folder_id, all_files, recursion=True)
+    return all_files
+
+def run_shared(all_files):
+    files_to_share = []
+    for s in all_files:
+        for k in s:
+            share_filet = False
+            if not s[k]["shared"]:
+                share_filet = True
+            if share_filet == True:
+                files_to_share.append(k)
+    return files_to_share
+
+def share_file(file_id_to_share):
+        drive.permissions().create(fileId=file_id_to_share, supportsAllDrives=True, body={
+            "role": "reader",
+            "type": "anyone"
+        })
+
+def sharefiles(runtin: int):
+    all_files = lookforfiles()
+    files_to_share = run_shared(all_files)
+    if len(files_to_share) > 0:
+        if len(files_to_share) < 300:
+            for i in tqdm(range(len(files_to_share)), desc="Single File Share Progress"):
+                share_file(files_to_share[i])
+            return all_files
+        if runtin < 100:
+            runtin = 50
+        print('Sharing a total of {} files.'.format(len(files_to_share)))
+        n = runtin
+        batches = [files_to_share[i:i + n] for i in range(0, len(files_to_share), n)]
+        with tqdm(total=len(files_to_share)) as pbar:
+            for i in batches:
+                batch = drive.new_batch_http_request()
+                for j in i:
+                    batch.add(drive.permissions().create(fileId=j,body={'role':'reader','type':'anyone'},supportsAllDrives=True))
+                batch.execute()
+                time.sleep(2)
+                pbar.update(n)
+        print('Finished sharing. Checking for files missed by batch request.')
+        sharefiles(n-100)
+    else:
+        print('No Files to share in these folder(s)')
+    return all_files
+
+all_files = sharefiles(300)
 
 print("Matching files.")
 
 for i in all_files:
-    tid = find_title_id(i["name"])
-    if tid in titledb:
-        if "mirrors" not in titledb[tid]:
-            titledb[tid]["mirrors"] = {}
+    for us in i:
+        tid = find_title_id(i[us]["name"])
+        if tid in titledb:
+            #print(i[us])
+            if "mirrors" not in titledb[tid]:
+                titledb[tid]["mirrors"] = {}
 
-        if i["fileExtension"] not in titledb[tid]["mirrors"]:
-            titledb[tid]["mirrors"][i["fileExtension"]] = []
+            if i[us]["fileExtension"] not in titledb[tid]["mirrors"]:
+                titledb[tid]["mirrors"][i[us]["fileExtension"]] = []
 
-        titledb[tid]["mirrors"][i["fileExtension"]].append(generate_entry(i))
+            titledb[tid]["mirrors"][i[us]["fileExtension"]].append(generate_entry(us,i[us]))
 
-    elif tid not in titledb:
-        print("Not found in titledb: %s" % tid)
+        elif tid not in titledb:
+            print("Not found in titledb: %s" % tid)
 
 # Remove entries from the database that do not have any mirrors
 for i in list(titledb.items()):
@@ -101,7 +153,8 @@ lps = []
 
 for i in titledb:
     if i["id"].endswith("000"):
-        if i["publisher"] == "Nintendo":
+        if i.get("publisher") == "Nintendo":
+            #print(i["name"])
             first_base.append(i)
         else:
             regular_base.append(i)
