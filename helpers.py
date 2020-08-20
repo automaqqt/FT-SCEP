@@ -163,14 +163,14 @@ def _ls(drive, folder_id, fields="files(id,name,size,fileExtension,permissionIds
     files = []
     resp = {"nextPageToken": None}
     while "nextPageToken" in resp:
-        resp = (drive.files().list(
+        resp = _apicall(drive, drive.files().list(
             q = " and ".join(["\"%s\" in parents" % folder_id] + [searchTerms] + ["trashed = false"]),
             fields = fields,
             pageSize = 1000,
             supportsAllDrives = True,
             includeItemsFromAllDrives = True,
             pageToken = resp["nextPageToken"]
-        ).execute())
+        ))
         files += resp["files"]
     return files
 
